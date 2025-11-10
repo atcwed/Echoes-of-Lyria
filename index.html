@@ -1,0 +1,841 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Echoes of Lyria — Aventura</title>
+<style>
+  :root{
+    --bg: #ffffff;
+    --panel:#f8fafc;
+    --muted:#6b7280;
+    --accent:#06b6d4;
+    --accent2:#f472b6;
+    --danger:#ef4444;
+    --glass: rgba(2,6,23,0.04);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Helvetica,Arial,sans-serif;background:var(--bg);color:#0f172a}
+  .wrap{display:flex;align-items:center;justify-content:center;height:100vh;padding:16px}
+  .card{width:1000px;background:var(--panel);border-radius:12px;box-shadow:0 12px 36px rgba(2,6,23,0.08);overflow:hidden;display:flex}
+  .left{flex:1;padding:14px;display:flex;flex-direction:column;gap:10px}
+  canvas{background:linear-gradient(180deg,#fefefe,#f0f9ff);border-radius:10px;display:block;width:100%;height:640px;box-shadow:inset 0 1px 0 rgba(255,255,255,0.6)}
+  .right{width:320px;padding:14px;border-left:1px solid rgba(2,6,23,0.04);display:flex;flex-direction:column;gap:12px}
+  h1{font-size:20px;margin:0}
+  .muted{color:var(--muted);font-size:13px}
+  .btn{background:linear-gradient(90deg,var(--accent),var(--accent2));color:white;border:0;padding:9px 12px;border-radius:10px;cursor:pointer;font-weight:600}
+  .stat{display:flex;justify-content:space-between;align-items:center;padding:8px;border-radius:10px;background:var(--glass)}
+  .log{height:220px;overflow:auto;padding:8px;border-radius:8px;background:rgba(2,6,23,0.02)}
+  .controls{display:flex;gap:8px;flex-wrap:wrap}
+  .slot{height:44px;background:rgba(255,255,255,0.02);border-radius:8px;display:flex;align-items:center;justify-content:space-between;padding:8px}
+  .center{text-align:center}
+  .dialogue{background:rgba(255,255,255,0.9);border-radius:8px;padding:8px;border:1px solid rgba(2,6,23,0.03)}
+  footer{font-size:12px;color:var(--muted);text-align:center;margin-top:6px}
+  @media(max-width:1024px){.card{width:100%;flex-direction:column}.right{width:100%;border-left:0;border-top:1px solid rgba(2,6,23,0.04)} canvas{height:480px}}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="left">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <h1>Echoes of Lyria</h1>
+            <div class="muted small">Aventura top-down — WASD / flechas mover • E interactuar • Espacio atacar</div>
+          </div>
+          <div class="controls">
+            <button id="btnStart" class="btn">Comenzar</button>
+            <button id="btnSave" class="btn" style="background:linear-gradient(90deg,#7c3aed,#06b6d4)">Guardar</button>
+            <button id="btnLoad" class="btn" style="background:linear-gradient(90deg,#06b6d4,#f472b6)">Cargar</button>
+          </div>
+        </div>
+
+        <canvas id="gameCanvas" width="920" height="640"></canvas>
+
+        <div style="display:flex;gap:8px">
+          <div class="stat"><div>Ubicación</div><div id="placeLabel">—</div></div>
+          <div class="stat"><div>Vida</div><div id="hpLabel">—</div></div>
+          <div class="stat"><div>Objetos</div><div id="itemsLabel">—</div></div>
+        </div>
+      </div>
+
+      <div class="right">
+        <div class="dialogue" id="intro">
+          <strong>Bienvenido a Lyria</strong>
+          <div class="muted small">En el tranquilo pueblo de Lyria un relicario antiguo ha sido robado. Habla con la gente, explora y recupera el artefacto antes de la noche eterna.</div>
+        </div>
+
+        <div>
+          <div class="muted">Misión</div>
+          <div id="quest" class="slot muted small">Sin misión</div>
+        </div>
+
+        <div>
+          <div class="muted">Registro</div>
+          <div class="log" id="log"></div>
+        </div>
+
+        <div>
+          <div class="muted">Inventario</div>
+          <div id="inventory" style="display:flex;flex-direction:column;gap:6px"></div>
+        </div>
+
+        <div class="center muted small">Hecho por ChatGPT — Demo de aventura</div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* Echoes of Lyria — juego de aventura en un archivo
+   - Top-down
+   - NPCs, misión principal, objetos, combate simple
+   - Inicio y final (victoria al recuperar artefacto, derrota si HP llega a 0)
+   - Guardado local
+*/
+
+/* =======================
+   Config y utilidades
+   ======================= */
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+const btnStart = document.getElementById('btnStart');
+const btnSave = document.getElementById('btnSave');
+const btnLoad = document.getElementById('btnLoad');
+const logEl = document.getElementById('log');
+const questEl = document.getElementById('quest');
+const inventoryEl = document.getElementById('inventory');
+const placeLabel = document.getElementById('placeLabel');
+const hpLabel = document.getElementById('hpLabel');
+const itemsLabel = document.getElementById('itemsLabel');
+
+const rand = (a,b)=> Math.floor(Math.random()*(b-a+1))+a;
+const clamp = (v,a,b)=> Math.max(a,Math.min(b,v));
+const dist = (a,b,c,d)=> Math.hypot(a-c,b-d);
+
+/* =======================
+   Game state
+   ======================= */
+let GAME = {
+  phase: 'menu', // menu, playing, ended
+  map: null,
+  tileSize: 32,
+  mapW: 32,
+  mapH: 20,
+  player: null,
+  npcs: [],
+  enemies: [],
+  items: [],
+  camera: {x:0,y:0},
+  quest: null,
+  inventory: [],
+  time: 0,
+  best: {}
+};
+
+/* =======================
+   Map generation (zones)
+   ======================= */
+function generateMap(){
+  // We'll create a small map with a village, forest and cave entrance
+  const w = GAME.mapW, h = GAME.mapH;
+  const tiles = Array.from({length:h},()=>Array.from({length:w},()=>0)); // 0 = ground
+  // surround with trees (1)
+  for(let x=0;x<w;x++){ tiles[0][x]=1; tiles[h-1][x]=1; }
+  for(let y=0;y<h;y++){ tiles[y][0]=1; tiles[y][w-1]=1; }
+  // village area (top-left)
+  for(let y=2;y<7;y++) for(let x=2;x<9;x++) tiles[y][x]=2; // path (2)
+  // houses (3)
+  for(let y=2;y<5;y++) { tiles[y][2]=3; tiles[y][4]=3; }
+  tiles[4][6]=3;
+  // forest area (center-right): scattered trees
+  for(let i=0;i<80;i++){
+    const x = rand(Math.floor(w*0.5), w-3);
+    const y = rand(2, h-3);
+    tiles[y][x] = 1;
+  }
+  // clearing for cave entrance bottom-right
+  for(let y=h-6;y<h-2;y++) for(let x=w-7;x<w-2;x++) tiles[y][x] = 0;
+  tiles[h-3][w-4] = 4; // cave entrance tile 4
+  return tiles;
+}
+
+/* =======================
+   Entities: player, NPC, enemy, item
+   ======================= */
+class Player {
+  constructor(x,y){
+    this.x = x; this.y = y;
+    this.size = 18;
+    this.speed = 120; // px/s
+    this.hp = 100;
+    this.maxHp = 100;
+    this.attack = 18;
+    this.inv = 0;
+  }
+  rect(){ return {x:this.x - this.size/2, y:this.y - this.size/2, w:this.size, h:this.size}; }
+  update(dt){
+    let dx=0, dy=0;
+    if(keys['w']||keys['arrowup']) dy -= 1;
+    if(keys['s']||keys['arrowdown']) dy += 1;
+    if(keys['a']||keys['arrowleft']) dx -= 1;
+    if(keys['d']||keys['arrowright']) dx += 1;
+    if(dx!==0||dy!==0){
+      const mag = Math.hypot(dx,dy); dx/=mag; dy/=mag;
+      const nx = this.x + dx*this.speed*dt;
+      const ny = this.y + dy*this.speed*dt;
+      if(!collidesMap(nx,ny,this.size)) { this.x = nx; this.y = ny; }
+    }
+    if(this.inv > 0) this.inv -= dt;
+  }
+  draw(ctx, cx, cy){
+    // body circle + accent
+    ctx.fillStyle = '#0f172a';
+    ctx.beginPath(); ctx.arc(this.x - cx, this.y - cy, this.size/2, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#06b6d4';
+    ctx.beginPath(); ctx.arc(this.x - cx, this.y - cy, this.size/3, 0, Math.PI*2); ctx.fill();
+    // hp bar
+    ctx.fillStyle = 'rgba(0,0,0,0.08)'; ctx.fillRect(8, H-28, 140, 12);
+    ctx.fillStyle = '#ef4444'; ctx.fillRect(8, H-28, 140*(this.hp/this.maxHp), 12);
+    ctx.strokeStyle = 'rgba(2,6,23,0.05)'; ctx.strokeRect(8, H-28, 140, 12);
+  }
+  takeDamage(v){
+    if(this.inv>0) return;
+    this.hp -= v; this.inv = 0.9; addLog('Has recibido ' + v + ' de daño');
+    if(this.hp <= 0){ onPlayerDeath(); }
+  }
+}
+
+class NPC {
+  constructor(x,y,name,dialogues){
+    this.x = x; this.y = y; this.name = name; this.dialogues = dialogues || []; this.size = 16;
+    this.talked = false;
+  }
+  draw(ctx, cx, cy){
+    ctx.fillStyle = '#6b7280';
+    ctx.beginPath(); ctx.arc(this.x - cx, this.y - cy, this.size/2,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = '12px Inter'; ctx.textAlign = 'center';
+    ctx.fillText(this.name, this.x - cx, this.y - cy - 18);
+  }
+  interact(){
+    // return dialogue list
+    return this.dialogues;
+  }
+}
+
+class Enemy {
+  constructor(x,y,level=1){
+    this.x = x; this.y = y; this.r = 14;
+    this.level = level;
+    this.hp = 30 + (level-1)*12;
+    this.speed = 40 + (level*6);
+    this.color = (level>2) ? '#f97316' : '#ef4444';
+  }
+  rect(){ return {x:this.x-this.r, y:this.y-this.r, w:this.r*2, h:this.r*2}; }
+  update(dt){
+    // simple wander + chase when near
+    const p = GAME.player;
+    const d = dist(this.x,this.y,p.x,p.y);
+    if(d < 160){
+      const dx = p.x - this.x, dy = p.y - this.y;
+      const m = Math.hypot(dx,dy);
+      if(m>0.1){ this.x += dx/m * this.speed * dt; this.y += dy/m * this.speed * dt; }
+      // attack when very close
+      if(d < this.r + p.size/2 + 2){ if(!this._atk) this._atk = 0; this._atk -= dt; if(this._atk<=0){ this._atk = 1.0; p.takeDamage(12); } }
+    } else {
+      // wander
+      if(!this._t){ this._t = 0; this._vx = (Math.random()*2-1); this._vy = (Math.random()*2-1); }
+      this._t -= dt;
+      if(this._t <= 0){ this._t = rand(1,3); this._vx = (Math.random()*2-1); this._vy = (Math.random()*2-1); }
+      const nx = this.x + this._vx * this.speed * 0.25 * dt;
+      const ny = this.y + this._vy * this.speed * 0.25 * dt;
+      if(!collidesMap(nx,ny,this.r*1.2)){ this.x = nx; this.y = ny; }
+    }
+  }
+  draw(ctx, cx, cy){
+    ctx.fillStyle = this.color;
+    ctx.beginPath(); ctx.arc(this.x-cx, this.y-cy, this.r, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font='11px Inter'; ctx.textAlign='center';
+    ctx.fillText(this.hp, this.x-cx, this.y-cy+4);
+  }
+}
+
+class ItemObj {
+  constructor(x,y,type){
+    this.x=x; this.y=y; this.type=type; this.size=10;
+  }
+  draw(ctx, cx, cy){
+    if(this.type==='potion'){ ctx.fillStyle='#10b981'; ctx.fillRect(this.x-cx-6, this.y-cy-6, 12,12); }
+    else if(this.type==='key'){ ctx.fillStyle='#f59e0b'; ctx.beginPath(); ctx.arc(this.x-cx, this.y-cy,8,0,Math.PI*2); ctx.fill(); }
+    else if(this.type==='gold'){ ctx.fillStyle='#fbbf24'; ctx.beginPath(); ctx.arc(this.x-cx, this.y-cy,6,0,Math.PI*2); ctx.fill(); }
+  }
+}
+
+/* =======================
+   Map collisions & helpers
+   ======================= */
+function collidesMap(px,py,size){
+  // size in px; check tile occupancy
+  const ts = GAME.tileSize;
+  const tx = Math.floor(px/ts);
+  const ty = Math.floor(py/ts);
+  const w = GAME.mapW, h = GAME.mapH;
+  // if outside bounds -> collide
+  if(tx<1||ty<1||tx>=w-1||ty>=h-1) return true;
+  const tile = GAME.map[ty][tx];
+  // tile types: 0 ground,1 tree,2 path,3 house,4 cave
+  if(tile===1 || tile===3) return true;
+  return false;
+}
+
+/* =======================
+   Camera
+   ======================= */
+function updateCamera(){
+  const marginX = W/3, marginY = H/3;
+  const px = GAME.player.x, py = GAME.player.y;
+  let cx = GAME.camera.x, cy = GAME.camera.y;
+  if(px - cx < marginX) cx = px - marginX;
+  if(px - cx > W - marginX) cx = px - (W - marginX);
+  if(py - cy < marginY) cy = py - marginY;
+  if(py - cy > H - marginY) cy = py - (H - marginY);
+  // clamp to map bounds
+  const maxX = GAME.mapW*GAME.tileSize - W;
+  const maxY = GAME.mapH*GAME.tileSize - H;
+  GAME.camera.x = clamp(cx, 0, Math.max(0,maxX));
+  GAME.camera.y = clamp(cy, 0, Math.max(0,maxY));
+}
+
+/* =======================
+   Input
+   ======================= */
+const keys = {};
+window.addEventListener('keydown', e=>{ keys[e.key.toLowerCase()] = true; if(e.key.toLowerCase()==='e') interact(); if(e.key.toLowerCase()===' ') attack(); });
+window.addEventListener('keyup', e=>{ keys[e.key.toLowerCase()] = false; });
+
+/* =======================
+   Game flow: start, save, load, end
+   ======================= */
+btnStart.addEventListener('click', ()=>{
+  if(GAME.phase === 'menu' || GAME.phase === 'ended'){ startGame(); btnStart.textContent = 'Reiniciar'; }
+  else { startGame(); }
+});
+btnSave.addEventListener('click', saveGame);
+btnLoad.addEventListener('click', loadGame);
+
+function startGame(){
+  GAME.phase = 'playing';
+  GAME.map = generateMap();
+  // place player in village center
+  const px = GAME.tileSize * 4 + GAME.tileSize/2;
+  const py = GAME.tileSize * 4 + GAME.tileSize/2;
+  GAME.player = new Player(px, py);
+  GAME.npcs = [];
+  GAME.enemies = [];
+  GAME.items = [];
+  GAME.inventory = [];
+  GAME.quest = {id:'find_key', status:'not started', text: 'Habla con el anciano del pueblo: busca la llave del relicario.'};
+  placeNPCs();
+  placeEnemies();
+  placeItems();
+  GAME.time = 0;
+  addLog('Has iniciado la aventura. ' + GAME.quest.text);
+  updateUI();
+}
+
+function endGame(win){
+  GAME.phase = 'ended';
+  if(win){ addLog('¡Has recuperado el relicario! Victoria.'); alert('¡Victoria! Has salvado a Lyria.'); }
+  else { addLog('Has sido derrotado... Fin de la aventura.'); alert('Derrota. Prueba otra vez.'); }
+}
+
+/* =======================
+   Place NPCs, enemies, items
+   ======================= */
+function placeNPCs(){
+  // elder in village
+  GAME.npcs.push(new NPC(GAME.tileSize*5, GAME.tileSize*3, 'Anciano', [
+    "Ah, viajero. El relicario fue robado por la noche.",
+    "Sin la llave no puedes entrar en la cueva.",
+    "Busca la llave en el bosque; alguien podría haberla dejado caer."
+  ]));
+  // merchant
+  GAME.npcs.push(new NPC(GAME.tileSize*7, GAME.tileSize*5, 'Mercader', [
+    "Vendo remedios. Una poción cura 40 HP.",
+    "Te doy pistas si me traes oro."
+  ]));
+  // guard near cave
+  GAME.npcs.push(new NPC(GAME.tileSize*(GAME.mapW-6), GAME.tileSize*(GAME.mapH-4), 'Guardia', [
+    "La cueva está cerrada. Solo quienes tengan la llave pueden entrar."
+  ]));
+}
+
+function placeEnemies(){
+  // spawn wandering enemies in forest
+  for(let i=0;i<8;i++){
+    const x = rand(Math.floor(GAME.mapW*0.5)*GAME.tileSize, (GAME.mapW-3)*GAME.tileSize);
+    const y = rand(3*GAME.tileSize, (GAME.mapH-4)*GAME.tileSize);
+    GAME.enemies.push(new Enemy(x,y, rand(1,2)));
+  }
+  // a stronger guardian near cave
+  const gx = (GAME.mapW-4)*GAME.tileSize; const gy = (GAME.mapH-3)*GAME.tileSize;
+  GAME.enemies.push(new Enemy(gx+20, gy+10, 3));
+}
+
+function placeItems(){
+  // random potions and a key
+  for(let i=0;i<6;i++){
+    const x = rand(6, GAME.mapW-6)*GAME.tileSize + 12;
+    const y = rand(4, GAME.mapH-6)*GAME.tileSize + 12;
+    GAME.items.push(new ItemObj(x,y, 'potion'));
+  }
+  // gold coins
+  for(let i=0;i<6;i++){
+    const x = rand(3, GAME.mapW-6)*GAME.tileSize + 12;
+    const y = rand(3, GAME.mapH-6)*GAME.tileSize + 12;
+    GAME.items.push(new ItemObj(x,y,'gold'));
+  }
+  // place key in forest (not at entrance)
+  const kx = rand(Math.floor(GAME.mapW*0.6), GAME.mapW-6)*GAME.tileSize + 12;
+  const ky = rand(4, GAME.mapH-6)*GAME.tileSize + 12;
+  GAME.items.push(new ItemObj(kx, ky, 'key'));
+}
+
+/* =======================
+   Interaction & combat
+   ======================= */
+function interact(){
+  if(GAME.phase !== 'playing') return;
+  // check NPCs within range
+  const p = GAME.player;
+  for(const npc of GAME.npcs){
+    if(dist(npc.x,npc.y,p.x,p.y) < 48){
+      // open dialogue (cycle lines)
+      const lines = npc.interact();
+      showDialogue(npc.name, lines);
+      // mission logic example
+      if(npc.name === 'Anciano' && GAME.quest.status === 'not started'){
+        GAME.quest.status = 'started';
+        addLog('Misión: ' + GAME.quest.text);
+        updateUI();
+      }
+      if(npc.name === 'Mercader'){
+        // if player has gold, offer potion
+        const goldIndex = GAME.inventory.findIndex(it=>it==='gold');
+        if(goldIndex >= 0){
+          // trade: remove gold, add potion
+          GAME.inventory.splice(goldIndex,1);
+          GAME.inventory.push('potion');
+          addLog('Comerciado oro por una poción.');
+          updateUI();
+        }
+      }
+      return;
+    }
+  }
+  // check items to pick
+  for(let i=GAME.items.length-1;i>=0;i--){
+    const it = GAME.items[i];
+    if(dist(it.x,it.y,p.x,p.y) < 24){
+      GAME.items.splice(i,1);
+      GAME.inventory.push(it.type);
+      addLog('Recolectaste: ' + it.type);
+      updateUI();
+      return;
+    }
+  }
+  // check cave entrance if player near and has key
+  const cavePos = findTileCoords(4); // tile type 4 = cave
+  if(cavePos){
+    const cx = cavePos.x*GAME.tileSize + GAME.tileSize/2;
+    const cy = cavePos.y*GAME.tileSize + GAME.tileSize/2;
+    if(dist(cx,cy,p.x,p.y) < 40){
+      const hasKey = GAME.inventory.includes('key');
+      if(hasKey){
+        // remove key and enter final challenge
+        const kidx = GAME.inventory.indexOf('key'); GAME.inventory.splice(kidx,1);
+        addLog('Usaste la llave para abrir la cueva. Entras al relicario...');
+        enterCave();
+      } else {
+        addLog('La cueva está cerrada. Necesitas una llave.');
+      }
+    }
+  }
+}
+
+function attack(){
+  if(GAME.phase !== 'playing') return;
+  // melee attack: damage enemies close to player
+  const p = GAME.player;
+  for(let i=GAME.enemies.length-1;i>=0;i--){
+    const e = GAME.enemies[i];
+    if(dist(e.x,e.y,p.x,p.y) < e.r + p.size/2 + 6){
+      e.hp -= p.attack;
+      addLog('Atacaste a un enemigo por ' + p.attack);
+      if(e.hp <= 0){
+        addLog('Enemigo derrotado.');
+        GAME.enemies.splice(i,1);
+        // drop small gold
+        if(Math.random() < 0.5) GAME.items.push(new ItemObj(e.x, e.y, 'gold'));
+      }
+      return;
+    }
+  }
+}
+
+/* =======================
+   Special: cave sequence & final
+   ======================= */
+function enterCave(){
+  // small boss fight: spawn boss
+  addLog('Una sombra emerge...'); 
+  const boss = new Enemy(GAME.player.x + 60, GAME.player.y - 20, 4);
+  boss.hp = 220;
+  boss.speed = 30;
+  GAME.enemies.push(boss);
+  // mark quest progressed
+  GAME.quest.status = 'in cave';
+  updateUI();
+}
+
+function checkEndCondition(){
+  // if player has relic in inventory -> win
+  if(GAME.inventory.includes('relic')){
+    endGame(true);
+  }
+}
+
+/* =======================
+   Utilities: find tile coords
+   ======================= */
+function findTileCoords(tileType){
+  for(let y=0;y<GAME.map.length;y++){
+    for(let x=0;x<GAME.map[y].length;x++){
+      if(GAME.map[y][x] === tileType) return {x,y};
+    }
+  }
+  return null;
+}
+
+/* =======================
+   Update loop
+   ======================= */
+let last = performance.now();
+function loop(now){
+  const dt = Math.min(0.04, (now - last)/1000);
+  last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+function update(dt){
+  if(GAME.phase !== 'playing') return;
+  GAME.time += dt;
+  GAME.player.update(dt);
+  // enemies update
+  for(const e of GAME.enemies) e.update(dt);
+  // pick up potions automatically? No, via interact
+  // auto healing when inventory has potion and hp low can be optional
+  // collisions: enemy damage applied in update
+  updateCamera();
+  checkAutoPickup(); // optional proximity pickup
+  checkEndCondition();
+}
+
+/* =======================
+   Auto pickup items if close (small radius)
+   ======================= */
+function checkAutoPickup(){
+  const p = GAME.player;
+  for(let i=GAME.items.length-1;i>=0;i--){
+    const it = GAME.items[i];
+    if(dist(it.x,it.y,p.x,p.y) < 18){
+      GAME.items.splice(i,1); GAME.inventory.push(it.type); addLog('Recolectaste: ' + it.type); updateUI();
+    }
+  }
+}
+
+/* =======================
+   Draw map and entities
+   ======================= */
+function draw(){
+  // clear
+  ctx.clearRect(0,0,W,H);
+  // draw tiles
+  const ts = GAME.tileSize;
+  const camX = GAME.camera.x, camY = GAME.camera.y;
+  for(let y=0;y<GAME.mapH;y++){
+    for(let x=0;x<GAME.mapW;x++){
+      const t = GAME.map[y][x];
+      const sx = x*ts - camX, sy = y*ts - camY;
+      if(t === 0){
+        // ground
+        ctx.fillStyle = '#f7f7f7'; ctx.fillRect(sx,sy,ts,ts);
+        ctx.fillStyle = '#eaeef2'; ctx.fillRect(sx, sy+ts*0.72, ts, ts*0.28);
+      } else if(t === 1){
+        // tree
+        ctx.fillStyle = '#0f172a'; ctx.beginPath(); ctx.arc(sx+ts/2, sy+ts/2, ts*0.45, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = '#16a34a'; ctx.beginPath(); ctx.arc(sx+ts/2, sy+ts/2 - 6, ts*0.38,0,Math.PI*2); ctx.fill();
+      } else if(t === 2){
+        // path
+        ctx.fillStyle = '#efe6cf'; ctx.fillRect(sx,sy,ts,ts);
+      } else if(t === 3){
+        // house
+        ctx.fillStyle = '#c7d2fe'; ctx.fillRect(sx+4,sy+8,ts-8,ts-10);
+        ctx.fillStyle = '#a78bfa'; ctx.fillRect(sx+ts/2-8, sy+ts/2-4, 16, 14);
+      } else if(t === 4){
+        // cave entrance
+        ctx.fillStyle = '#0f172a'; ctx.beginPath(); ctx.ellipse(sx+ts/2, sy+ts/2, ts*0.42, ts*0.52,0,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle = '#fff'; ctx.font='12px Inter'; ctx.textAlign='center'; ctx.fillText('Cueva', sx+ts/2, sy+ts/2+4);
+      }
+    }
+  }
+  // items
+  for(const it of GAME.items) it.draw(ctx, camX, camY);
+  // npcs
+  for(const npc of GAME.npcs) npc.draw(ctx, camX, camY);
+  // enemies
+  for(const e of GAME.enemies) e.draw(ctx, camX, camY);
+  // player
+  GAME.player.draw(ctx, camX, camY);
+  // UI texts
+  drawUIPanels();
+}
+
+/* =======================
+   UI helper
+   ======================= */
+function drawUIPanels(){
+  // draw small minimap top-right
+  const miniW = 160, miniH = 110;
+  const x = W - miniW - 12, y = 12;
+  ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.fillRect(x,y,miniW,miniH);
+  ctx.strokeStyle = 'rgba(2,6,23,0.04)'; ctx.strokeRect(x,y,miniW,miniH);
+  // draw player dot relative
+  const mapPxW = GAME.mapW*GAME.tileSize, mapPxH = GAME.mapH*GAME.tileSize;
+  const scaleX = miniW / mapPxW, scaleY = miniH / mapPxH;
+  // tiles as dots
+  for(let yy=0; yy<GAME.mapH; yy++){
+    for(let xx=0; xx<GAME.mapW; xx++){
+      const t = GAME.map[yy][xx];
+      if(t === 1){
+        ctx.fillStyle = '#16a34a';
+        ctx.fillRect(x + xx*GAME.tileSize*scaleX, y + yy*GAME.tileSize*scaleY, Math.max(1, GAME.tileSize*scaleX), Math.max(1,GAME.tileSize*scaleY));
+      }
+      if(t===4){
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(x + xx*GAME.tileSize*scaleX, y + yy*GAME.tileSize*scaleY, Math.max(2, GAME.tileSize*scaleX), Math.max(2,GAME.tileSize*scaleY));
+      }
+    }
+  }
+  // player dot
+  ctx.fillStyle = '#06b6d4';
+  ctx.beginPath(); ctx.arc(x + GAME.player.x * scaleX, y + GAME.player.y * scaleY, 3, 0, Math.PI*2); ctx.fill();
+}
+
+/* =======================
+   Dialogue & UI toolbox
+   ======================= */
+function showDialogue(who, lines){
+  // simple modal-like bottom strip
+  const width = W - 40, height = 80;
+  const px = 20, py = H - height - 20;
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,255,255,0.95)';
+  ctx.fillRect(px,py,width,height);
+  ctx.fillStyle = '#0f172a'; ctx.font='600 14px Inter';
+  ctx.fillText(who, px+12, py+24);
+  ctx.font='13px Inter';
+  // show first line only for brevity
+  ctx.fillText(lines[0] || '', px+12, py+48);
+  ctx.restore();
+  addLog(who + ': ' + (lines[0] || '...'));
+}
+
+/* =======================
+   Log & UI updates
+   ======================= */
+function addLog(msg){
+  const d = document.createElement('div'); d.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  logEl.prepend(d);
+  while(logEl.children.length > 80) logEl.removeChild(logEl.lastChild);
+}
+
+function updateUI(){
+  placeLabel.textContent = detectPlace();
+  hpLabel.textContent = GAME.player.hp + ' / ' + GAME.player.maxHp;
+  itemsLabel.textContent = GAME.inventory.length;
+  // inventory list
+  inventoryEl.innerHTML = '';
+  const counts = {};
+  for(const it of GAME.inventory) counts[it] = (counts[it]||0)+1;
+  for(const key in counts){
+    const div = document.createElement('div'); div.className='slot';
+    div.innerHTML = `<div style="font-weight:600">${key}</div><div>${counts[key]}</div>`;
+    inventoryEl.appendChild(div);
+  }
+  questEl.textContent = (GAME.quest && GAME.quest.text) ? (GAME.quest.text + ' (' + GAME.quest.status + ')') : 'Sin misión';
+}
+
+/* =======================
+   Detect place name by player tile
+   ======================= */
+function detectPlace(){
+  const tx = Math.floor(GAME.player.x / GAME.tileSize);
+  const ty = Math.floor(GAME.player.y / GAME.tileSize);
+  // village area quick checks
+  if(tx < 10 && ty < 8) return 'Aldea de Lyria';
+  if(tx > GAME.mapW*0.6) return 'Bosque';
+  // cave area
+  const cavePos = findTileCoords(4);
+  if(cavePos && Math.abs(tx - cavePos.x) < 3 && Math.abs(ty - cavePos.y) < 3) return 'Entrada de la cueva';
+  return 'Praderas';
+}
+
+/* =======================
+   Save / Load
+   ======================= */
+function saveGame(){
+  try{
+    const payload = {
+      map: GAME.map,
+      player: {x:GAME.player.x, y:GAME.player.y, hp:GAME.player.hp},
+      inventory: GAME.inventory,
+      quest: GAME.quest,
+      enemies: GAME.enemies.map(e=>({x:e.x,y:e.y,hp:e.hp,level:e.level}))
+    };
+    localStorage.setItem('elyria_save', JSON.stringify(payload));
+    addLog('Juego guardado.');
+  } catch(e){ addLog('Error guardando: '+e.message); }
+}
+
+function loadGame(){
+  try{
+    const raw = localStorage.getItem('elyria_save');
+    if(!raw){ addLog('No hay partida guardada.'); return; }
+    const payload = JSON.parse(raw);
+    GAME.map = payload.map || GAME.map;
+    GAME.player.x = payload.player.x || GAME.player.x;
+    GAME.player.y = payload.player.y || GAME.player.y;
+    GAME.player.hp = payload.player.hp || GAME.player.hp;
+    GAME.inventory = payload.inventory || [];
+    GAME.quest = payload.quest || GAME.quest;
+    // recreate enemies
+    GAME.enemies = (payload.enemies || []).map(e=>{ const en = new Enemy(e.x,e.y, e.level || 1); en.hp = e.hp || en.hp; return en; });
+    addLog('Partida cargada.');
+    updateUI();
+  } catch(e){ addLog('Error cargando: '+e.message); }
+}
+
+/* =======================
+   Find tile coords helper
+   ======================= */
+function findTileCoords(tileType){
+  for(let y=0;y<GAME.map.length;y++) for(let x=0;x<GAME.map[y].length;x++) if(GAME.map[y][x]===tileType) return {x,y};
+  return null;
+}
+
+/* =======================
+   Player death
+   ======================= */
+function onPlayerDeath(){
+  addLog('Has perdido toda la vida...');
+  endGame(false);
+}
+
+/* =======================
+   Auto pickup via interact + use items
+   ======================= */
+function useItem(type){
+  const idx = GAME.inventory.indexOf(type);
+  if(idx >= 0){
+    GAME.inventory.splice(idx,1);
+    if(type === 'potion'){ GAME.player.hp = Math.min(GAME.player.maxHp, GAME.player.hp + 40); addLog('Usaste una poción.'); }
+    if(type === 'gold'){ addLog('Monedas utilizadas.'); }
+    if(type === 'key'){ addLog('Guardas la llave.'); }
+    if(type === 'relic'){ addLog('Tienes el relicario.'); }
+    updateUI();
+  } else {
+    addLog('No tienes ' + type);
+  }
+}
+
+/* =======================
+   Auto events: when boss defeated drop relic
+   ======================= */
+function checkDrops(){
+  // if no enemies left in cave phase and quest in cave, drop relic
+  if(GAME.quest && GAME.quest.status === 'in cave'){
+    // if no giants left (level >=3)
+    const bossAlive = GAME.enemies.some(e=>e.level >= 3);
+    if(!bossAlive && !GAME.inventory.includes('relic')){
+      // spawn relic at cave center
+      const cavePos = findTileCoords(4);
+      if(cavePos){
+        const x = cavePos.x*GAME.tileSize + GAME.tileSize/2;
+        const y = cavePos.y*GAME.tileSize + GAME.tileSize/2;
+        GAME.items.push(new ItemObj(x,y,'relic'));
+        addLog('Un brillo aparece en la cueva...');
+      }
+    }
+  }
+}
+
+/* =======================
+   Camera update wrapper
+   ======================= */
+function updateCamera(){
+  updateCamera();
+}
+
+/* =======================
+   Game initialization
+   ======================= */
+function init(){
+  // start menu state
+  GAME.phase = 'menu';
+  // pre-generate map for preview
+  GAME.map = generateMap();
+  // place temporary player in village
+  GAME.player = new Player(GAME.tileSize*4 + GAME.tileSize/2, GAME.tileSize*4 + GAME.tileSize/2);
+  GAME.camera.x = 0; GAME.camera.y = 0;
+  GAME.inventory = [];
+  updateUI();
+  requestAnimationFrame(loop);
+}
+
+init();
+
+/* =======================
+   Periodic tasks
+   ======================= */
+setInterval(()=>{ if(GAME.phase==='playing'){ checkDrops(); updateUI(); } }, 800);
+
+/* Expose debug
+   window._ely = GAME;
+*/
+
+/* Small note: There's mutual recursion for updateCamera() wrapper name; fix by explicitly using a different function name */
+function updateCamera(){
+  const marginX = W/3, marginY = H/3;
+  const px = GAME.player.x, py = GAME.player.y;
+  let cx = GAME.camera.x, cy = GAME.camera.y;
+  if(px - cx < marginX) cx = px - marginX;
+  if(px - cx > W - marginX) cx = px - (W - marginX);
+  if(py - cy < marginY) cy = py - marginY;
+  if(py - cy > H - marginY) cy = py - (H - marginY);
+  const maxX = GAME.mapW*GAME.tileSize - W;
+  const maxY = GAME.mapH*GAME.tileSize - H;
+  GAME.camera.x = clamp(cx, 0, Math.max(0,maxX));
+  GAME.camera.y = clamp(cy, 0, Math.max(0,maxY));
+}
+
+/* Finally, robust draw loop already defined above; but ensure last variable defined */
+last = performance.now();
+requestAnimationFrame(loop);
+
+</script>
+</body>
+</html>
